@@ -1,7 +1,11 @@
+from datetime import date, timedelta, datetime
+today = date.today().strftime('%Y-%m-%d')
+two_weeks_ago = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
+
 PROJECT_ID = "global-standard-474515-c2"
 
-START_DATE = "2024-01-01"
-END_DATE = "2024-01-15"
+START_DATE = F"{two_weeks_ago}"
+END_DATE = f"{today}"
 
 CLOUD_FILTER = 20
 

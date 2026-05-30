@@ -7,9 +7,3 @@ class FloodModel:
 
     def predict_dataframe(self, df):
         return self.model.predict(df)
-
-    def predict_raster(self, feature_image):
-        """
-        Converts ML model into raster prediction
-        """
-        return feature_image.classify(self.model)
