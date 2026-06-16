@@ -5,23 +5,25 @@ import geopandas as gpd
 import shapely.geometry as sg
 import matplotlib.pyplot as plt
 from datetime import datetime
+import seaborn as sns
 
 from gee.auth import initialize_ee
-from gee.datasets import get_sentinel2
+from gee.datasets import get_sentinel2, pop_data
 from gee.features import build_feature_stack, create_composite
 from gee.visualization import create_map, Analyze_ndvi_time_series
 from gee.flood_model import FloodModel
 from config import *
 
 # -------------------
-# INIT
+# 1. INIT SYSTEM
 # -------------------
 initialize_ee()
-Map = create_map()
 
 # -------------------
-# ROI
+# 2. ROI
 # -------------------
+Map = create_map()
+
 roi = ee.Geometry.Polygon([
     [-228.087384, -33.032017],
     [-228.087384, -31.189639],
@@ -31,169 +33,272 @@ roi = ee.Geometry.Polygon([
 ])
 
 # -------------------
-# DATA
+# 3. LOAD DATA
 # -------------------
 collection = get_sentinel2(roi)
 
+# -------------------
+# 4. FEATURE ENGINEERING
+# -------------------
 feature_collection = build_feature_stack(collection)
 composite = create_composite(feature_collection)
 
 feature_stack = composite.select([
-    'NDVI','NDWI','elevation','slope',
-    'surface_runoff_sum','total_precipitation_sum',
-    'volumetric_soil_water_layer_1','temperature_2m',
-    'month','latitude','longitude',
-    'historical_flood_lga','high_risk_state'
+    'NDVI',
+    'NDWI',
+    'elevation',
+    'slope',
+    'surface_runoff_sum',
+    'total_precipitation_sum',
+    'volumetric_soil_water_layer_1',
+    'temperature_2m',
+    'month',
+    'latitude',
+    'longitude',
+    'historical_flood_lga',
+    'high_risk_state'
 ])
 
 # -------------------
-# SAMPLE
+# SAMPLE DATA
 # -------------------
-samples = feature_stack.sample(region=roi, scale=10, numPixels=5000, geometries=True)
-features = samples.getInfo()['features']
+samples = feature_stack.sample(
+    region=roi,
+    scale=5,
+    numPixels=5000,
+    geometries=True
+)
+
+samples_dict = samples.getInfo()
 
 rows = []
 geoms = []
 
-for f in features:
-    p = f['properties']
-
-    row = {
-        'NDVI': p.get('NDVI'),
-        'NDWI': p.get('NDWI'),
-        'elevation': p.get('elevation'),
-        'slope': p.get('slope'),
-        'surface_runoff_sum': p.get('surface_runoff_sum'),
-        'total_precipitation_sum': p.get('total_precipitation_sum'),
-        'volumetric_soil_water_layer_1': p.get('volumetric_soil_water_layer_1'),
-        'temperature_2m': p.get('temperature_2m'),
-        'month': p.get('month'),
-        'latitude': p.get('latitude'),
-        'longitude': p.get('longitude'),
-        'historical_flood_lga': p.get('historical_flood_lga'),
-        'high_risk_state': p.get('high_risk_state')
-    }
-
-    if None not in row.values():
-        rows.append(row)
-        geoms.append(f['geometry'])
+for feature in samples_dict['features']:
+    rows.append(feature['properties'])
+    geoms.append(feature['geometry'])
 
 df = pd.DataFrame(rows)
 
 # -------------------
-# MODEL
+# FEATURE SELECTION
+# -------------------
+feature_cols = [
+    'NDVI',
+    'NDWI',
+    'elevation',
+    'slope',
+    'surface_runoff_sum',
+    'total_precipitation_sum',
+    'volumetric_soil_water_layer_1',
+    'temperature_2m',
+    'month',
+    'latitude',
+    'longitude',
+    'historical_flood_lga',
+    'high_risk_state'
+]
+
+# -------------------
+# LOAD MODEL
 # -------------------
 model = FloodModel("flood_xgboost_model.pkl")
 
-feature_cols = [
-    'NDVI','NDWI','elevation','slope',
-    'surface_runoff_sum','total_precipitation_sum',
-    'volumetric_soil_water_layer_1','temperature_2m',
-    'month','latitude','longitude',
-    'historical_flood_lga','high_risk_state'
-]
-
+# -------------------
+# PREDICTION (TABULAR)
+# -------------------
 df['prediction'] = model.predict(df[feature_cols])
 
-print("Prediction done:", df['prediction'].head())
+print(df[['prediction']].head())
+print(df)
 
 # -------------------
-# GEOMETRY FIX
+# GEOMETRY FIX (✅ CORRECTED)
 # -------------------
-df['geometry'] = [
-    sg.Point(lon, lat)
-    for lon, lat in zip(df['longitude'], df['latitude'])
-]
+def ee_geom_to_shapely(g):
+    coords = g['coordinates']
 
+    if g['type'] == 'Point':
+        return sg.Point(coords)
+
+    elif g['type'] == 'Polygon':
+        return sg.Polygon(coords[0])
+
+    return None
+
+df['geometry'] = [ee_geom_to_shapely(g) for g in geoms]
+
+# ✅ FIX: ADD CRS (THIS WAS YOUR ERROR)
 gdf = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326")
 
 # -------------------
-# MAP RASTER
+# RASTER CONVERSION
 # -------------------
 prediction_img = geemap.geopandas_to_ee(gdf).reduceToImage(
     properties=['prediction'],
     reducer=ee.Reducer.first()
 )
 
-Map.addLayer(prediction_img, {
+# -------------------
+# VISUALIZATION
+# -------------------
+vis = {
     'min': 0,
     'max': 1,
-    'palette': ['green','yellow','orange','red']
-}, "Flood Risk")
+    'palette': ['green', 'yellow', 'orange', 'red']
+}
+
+Map.addLayer(prediction_img, vis, "Flood Risk Map")
+
+# # NDVI
+# Map.addLayer(
+#     feature_stack.select('NDVI'),
+#     {'min': -0.2, 'max': 0.8, 'palette': ['blue', 'white', 'green']},
+#     'NDVI'
+# )
+
+# # NDWI
+# Map.addLayer(
+#     feature_stack.select('NDWI'),
+#     {'min': -0.3, 'max': 0.5, 'palette': ['white', 'blue']},
+#     'NDWI'
+# )
+
+# # Elevation
+# Map.addLayer(
+#     feature_stack.select('elevation'),
+#     {'min': 0, 'max': 2000, 'palette': ['green', 'yellow', 'brown']},
+#     'Elevation'
+# )
+
+# # Slope
+# Map.addLayer(
+#     feature_stack.select('slope'),
+#     {'min': 0, 'max': 45, 'palette': ['white', 'orange', 'red']},
+#     'Slope'
+# )
+
+# # Runoff
+# Map.addLayer(
+#     feature_stack.select('surface_runoff_sum'),
+#     {'min': 0, 'max': 100, 'palette': ['white', 'blue']},
+#     'Runoff'
+# )
+
+# # Precipitation
+# Map.addLayer(
+#     feature_stack.select('total_precipitation_sum'),
+#     {'min': 0, 'max': 200, 'palette': ['white', 'cyan', 'blue']},
+#     'Precipitation'
+# )
+
+# # Soil moisture
+# Map.addLayer(
+#     feature_stack.select('volumetric_soil_water_layer_1'),
+#     {'min': 0, 'max': 1, 'palette': ['yellow', 'green', 'darkgreen']},
+#     'Soil Moisture'
+# )
+
+# # Temperature
+# Map.addLayer(
+#     feature_stack.select('temperature_2m'),
+#     {'min': 270, 'max': 320, 'palette': ['blue', 'yellow', 'red']},
+#     'Temperature'
+# )
 
 Map.centerObject(roi, 10)
+
 Map.save("map.html")
 
-# ==========================================================
-# 🌊 TIME SERIES (SAFE VERSION - NO CRASH)
-# ==========================================================
+# -------------------
+# 5. NDVI TIME SERIES
+# -------------------
+# -------------------
+# 5. STABLE MULTI-FEATURE TIME SERIES
+# -------------------
 
-Analyze = Analyze_ndvi_time_series(roi, START_DATE, END_DATE, composite)
 
-ts_collection = collection.map(Analyze.add_ndvi_and_time)
-ts = ts_collection.map(Analyze.extract_ndvi_value)
-
-ts_features = ts.getInfo()['features']
-
-df_ts = []
-
-for f in ts_features:
-    p = f['properties']
-
-    df_ts.append({
-        'date': datetime.fromtimestamp(p['date']['value'] / 1000),
-        'NDVI': p.get('NDVI'),
-        'NDWI': p.get('NDWI'),
-        'elevation': p.get('elevation'),
-        'slope': p.get('slope'),
-        'surface_runoff_sum': p.get('surface_runoff_sum'),
-        'total_precipitation_sum': p.get('total_precipitation_sum'),
-        'volumetric_soil_water_layer_1': p.get('volumetric_soil_water_layer_1'),
-        'temperature_2m': p.get('temperature_2m')
-    })
-
-df_ts = pd.DataFrame(df_ts)
 
 # -------------------
-# CLEAN CORRELATION (FIXED)
+# CLEAN DATA (SAFE)
 # -------------------
-corr_features = [
-    'NDVI','NDWI','elevation','slope',
-    'surface_runoff_sum','total_precipitation_sum',
-    'volumetric_soil_water_layer_1','temperature_2m'
-]
+df_plot = df.copy()
 
-# keep only existing columns (CRITICAL FIX)
-corr_features = [c for c in corr_features if c in df_ts.columns]
-
-corr = df_ts[corr_features].corr()
-
-print("\n📊 CORRELATION (SAFE)")
-print(corr)
+# ensure no NaNs break plots
+df_plot = df_plot.dropna()
 
 # -------------------
-# SAFE PLOT
+# 1. FEATURE DISTRIBUTIONS
 # -------------------
-def plot_safe(df):
+def plot_distributions(df):
 
-    fig, axs = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
+    features = [
+        'NDVI',
+        'NDWI',
+        'elevation',
+        'total_precipitation_sum',
+        'volumetric_soil_water_layer_1'
+    ]
 
-    if 'NDVI' in df:
-        axs[0,0].plot(df['NDVI'])
-        axs[0,0].set_title("NDVI")
+    fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+    axes = axes.flatten()
 
-    if 'NDWI' in df:
-        axs[0,1].plot(df['NDWI'])
-        axs[0,1].set_title("NDWI")
+    for i, col in enumerate(features):
+        if col in df.columns:
+            axes[i].hist(df[col], bins=30, alpha=0.7)
+            axes[i].set_title(f"{col} distribution")
+            axes[i].grid(True)
 
-    if 'surface_runoff_sum' in df:
-        axs[1,0].plot(df['surface_runoff_sum'])
-        axs[1,0].set_title("Runoff")
-
-    if 'temperature_2m' in df:
-        axs[1,1].plot(df['temperature_2m'])
-        axs[1,1].set_title("Temperature")
-
+    plt.tight_layout()
     plt.show()
 
-plot_safe(df_ts)
+
+# -------------------
+# 2. FLOOD VS NON-FLOOD COMPARISON
+# -------------------
+def plot_flood_vs_nonflood(df):
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+    sns.boxplot(x='prediction', y='NDVI', data=df, ax=axes[0,0])
+    axes[0,0].set_title("NDVI vs Flood Risk")
+
+    sns.boxplot(x='prediction', y='NDWI', data=df, ax=axes[0,1])
+    axes[0,1].set_title("NDWI vs Flood Risk")
+
+    sns.boxplot(x='prediction', y='elevation', data=df, ax=axes[1,0])
+    axes[1,0].set_title("Elevation vs Flood Risk")
+
+    sns.boxplot(x='prediction', y='volumetric_soil_water_layer_1', data=df, ax=axes[1,1])
+    axes[1,1].set_title("Soil Moisture vs Flood Risk")
+
+    plt.tight_layout()
+    plt.show()
+
+
+# -------------------
+# 3. CORRELATION HEATMAP (IMPORTANT)
+# -------------------
+def plot_correlation(df):
+
+    cols = [
+        'NDVI', 'NDWI', 'elevation',
+        'total_precipitation_sum',
+        'volumetric_soil_water_layer_1',
+        'prediction'
+    ]
+
+    corr = df[cols].corr()
+
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(corr, annot=True, cmap='coolwarm', fmt=".2f")
+    plt.title("Feature Correlation Heatmap")
+    plt.show()
+
+
+# -------------------
+# RUN ALL PLOTS
+# -------------------
+plot_distributions(df_plot)
+plot_flood_vs_nonflood(df_plot)
+plot_correlation(df_plot)
