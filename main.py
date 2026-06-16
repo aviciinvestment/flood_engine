@@ -221,84 +221,107 @@ Map.save("map.html")
 
 # -------------------
 # CLEAN DATA (SAFE)
+## SAFE COPY
 # -------------------
-df_plot = df.copy()
-
-# ensure no NaNs break plots
-df_plot = df_plot.dropna()
-
-# -------------------
-# 1. FEATURE DISTRIBUTIONS
-# -------------------
-def plot_distributions(df):
-
-    features = [
-        'NDVI',
-        'NDWI',
-        'elevation',
-        'total_precipitation_sum',
-        'volumetric_soil_water_layer_1'
-    ]
-
-    fig, axes = plt.subplots(2, 3, figsize=(14, 8))
-    axes = axes.flatten()
-
-    for i, col in enumerate(features):
-        if col in df.columns:
-            axes[i].hist(df[col], bins=30, alpha=0.7)
-            axes[i].set_title(f"{col} distribution")
-            axes[i].grid(True)
-
-    plt.tight_layout()
-    plt.show()
-
+df = df.copy()
+df = df.dropna()
 
 # -------------------
-# 2. FLOOD VS NON-FLOOD COMPARISON
+# YOUR FULL FEATURE SET
 # -------------------
-def plot_flood_vs_nonflood(df):
+feature_cols = [
+    'NDVI',
+    'NDWI',
+    'elevation',
+    'slope',
+    'surface_runoff_sum',
+    'total_precipitation_sum',
+    'volumetric_soil_water_layer_1',
+    'temperature_2m',
+    'month',
+    'latitude',
+    'longitude',
+    'historical_flood_lga',
+    'high_risk_state'
+]
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-
-    sns.boxplot(x='prediction', y='NDVI', data=df, ax=axes[0,0])
-    axes[0,0].set_title("NDVI vs Flood Risk")
-
-    sns.boxplot(x='prediction', y='NDWI', data=df, ax=axes[0,1])
-    axes[0,1].set_title("NDWI vs Flood Risk")
-
-    sns.boxplot(x='prediction', y='elevation', data=df, ax=axes[1,0])
-    axes[1,0].set_title("Elevation vs Flood Risk")
-
-    sns.boxplot(x='prediction', y='volumetric_soil_water_layer_1', data=df, ax=axes[1,1])
-    axes[1,1].set_title("Soil Moisture vs Flood Risk")
-
-    plt.tight_layout()
-    plt.show()
-
-
-# -------------------
-# 3. CORRELATION HEATMAP (IMPORTANT)
-# -------------------
-def plot_correlation(df):
-
-    cols = [
-        'NDVI', 'NDWI', 'elevation',
-        'total_precipitation_sum',
-        'volumetric_soil_water_layer_1',
-        'prediction'
-    ]
-
-    corr = df[cols].corr()
-
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(corr, annot=True, cmap='coolwarm', fmt=".2f")
-    plt.title("Feature Correlation Heatmap")
-    plt.show()
-
+# ensure only existing columns
+feature_cols = [c for c in feature_cols if c in df.columns]
 
 # -------------------
-# RUN ALL PLOTS
+# 1. FEATURE CORRELATION (FULL MODEL VIEW)
 # -------------------
-plot_distributions(df_plot)
-plot_flood_vs_nonflood(df_plot)
-plot_correlation(df_plot)
+plt.figure(figsize=(12, 8))
+corr = df[feature_cols + ['prediction']].corr()
+
+sns.heatmap(corr, cmap='coolwarm', annot=False)
+plt.title("Flood Feature Correlation Matrix (Full Model View)")
+plt.show()
+
+# -------------------
+# 2. FEATURE IMPORTANCE VIEW (prediction relationships)
+# -------------------
+important_features = [
+    'NDVI', 'NDWI',
+    'elevation', 'slope',
+    'surface_runoff_sum',
+    'total_precipitation_sum',
+    'volumetric_soil_water_layer_1',
+    'temperature_2m'
+]
+
+fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+axes = axes.flatten()
+
+for i, col in enumerate(important_features):
+    if col in df.columns:
+        sns.boxplot(x='prediction', y=col, data=df, ax=axes[i])
+        axes[i].set_title(f"{col} vs Flood Risk")
+
+plt.tight_layout()
+plt.show()
+
+# -------------------
+# 3. TIME SERIES DATAFRAME (SAFE AGGREGATION)
+# -------------------
+# This ONLY makes sense if multiple samples exist per month
+time_series_df = (
+    df.groupby('month')
+    .agg({
+        'NDVI': 'mean',
+        'NDWI': 'mean',
+        'total_precipitation_sum': 'mean',
+        'volumetric_soil_water_layer_1': 'mean',
+        'temperature_2m': 'mean',
+        'surface_runoff_sum': 'mean'
+    })
+    .reset_index()
+)
+
+print("\n📊 TIME SERIES DATAFRAME (MONTHLY AGGREGATION)")
+print(time_series_df.head())
+
+# -------------------
+# 4. TIME SERIES VISUALIZATION
+# -------------------
+plt.figure(figsize=(12, 6))
+
+plt.plot(time_series_df['month'], time_series_df['NDVI'], label='NDVI')
+plt.plot(time_series_df['month'], time_series_df['NDWI'], label='NDWI')
+plt.plot(time_series_df['month'], time_series_df['total_precipitation_sum'], label='Rainfall')
+plt.plot(time_series_df['month'], time_series_df['volumetric_soil_water_layer_1'], label='Soil Moisture')
+
+plt.title("Seasonal Environmental Patterns (Monthly Averages)")
+plt.xlabel("Month")
+plt.ylabel("Value")
+plt.legend()
+plt.grid()
+plt.show()
+
+# -------------------
+# 5. FLOOD RISK DISTRIBUTION
+# -------------------
+plt.figure(figsize=(6,4))
+sns.countplot(x='prediction', data=df)
+plt.title("Flood Risk Distribution")
+plt.show()
